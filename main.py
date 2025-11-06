@@ -2,71 +2,82 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 import numpy as np
-import io, os
+import os, io
+from typing import Tuple
 
-# ---------------------------------------------------------------------
-# App setup
-# ---------------------------------------------------------------------
-app = FastAPI(title="Baby Gender Predictor Validator")
+app = FastAPI(title="Baby Predictor Validator")
 
-# CORS
 allowed_origins = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "http://localhost:3000").split(",")]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=False,
-    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_methods=["POST","GET","OPTIONS"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------
 @app.get("/health")
 def health():
     return {"ok": True, "service": "validator", "status": "running"}
 
-# ---------------------------------------------------------------------
-# Image classifier (mock validator for ultrasound)
-# ---------------------------------------------------------------------
+def to_gray(arr: np.ndarray) -> np.ndarray:
+    if arr.ndim == 3:
+        return (0.299*arr[...,0] + 0.587*arr[...,1] + 0.114*arr[...,2]).astype(np.float32)
+    return arr.astype(np.float32)
+
+def sobel_edges(gray: np.ndarray) -> np.ndarray:
+    Kx = np.array([[1,0,-1],[2,0,-2],[1,0,-1]], dtype=np.float32)
+    Ky = np.array([[1,2,1],[0,0,0],[-1,-2,-1]], dtype=np.float32)
+    try:
+        from scipy.signal import convolve2d
+        gx = convolve2d(gray, Kx, mode="same", boundary="symm")
+        gy = convolve2d(gray, Ky, mode="same", boundary="symm")
+    except Exception:
+        gy, gx = np.gradient(gray)
+    mag = np.hypot(gx, gy)
+    return mag
+
+def edge_density_and_contrast(gray: np.ndarray) -> Tuple[float, float]:
+    g = (gray - gray.min()) / max(1e-6, (gray.max() - gray.min()))
+    mag = sobel_edges(g)
+    thresh = np.percentile(mag, 85)
+    edge_mask = (mag > thresh).astype(np.uint8)
+    density = float(edge_mask.mean())
+    contrast = float(g.std())
+    return density, contrast
+
 @app.post("/classify")
 async def classify(file: UploadFile = File(...)):
-    # Validate extension
-    if not file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
-        raise HTTPException(status_code=400, detail="Only JPG and PNG files are supported.")
+    if not file.filename.lower().endswith((".png",".jpg",".jpeg")):
+        raise HTTPException(status_code=400, detail="Only JPG/PNG supported.")
 
     try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        raw = await file.read()
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image file.")
 
-    # Convert to array for mock validation
-    img_array = np.array(image)
-    h, w, _ = img_array.shape
-
-    # -----------------------------------------------------------------
-    # Fake detection rules (placeholder for your future ML model)
-    # -----------------------------------------------------------------
-    # Reject if too small / blurry
-    if h < 200 or w < 200:
+    arr = np.array(img)
+    h, w, _ = arr.shape
+    if h < 220 or w < 220:
         raise HTTPException(status_code=400, detail="Image too small. Please upload a clear scan.")
 
-    # Dummy check: random-ish rule to simulate classification
-    mean_pixel = img_array.mean()
-    label = "ultrasound_side" if 90 < mean_pixel < 200 else "not_ultrasound"
+    gray = to_gray(arr)
+    density, contrast = edge_density_and_contrast(gray)
 
-    # Confidence simulation
-    confidence = round(float(abs(mean_pixel - 128) / 128), 2)
+    likely_ultrasound = (0.03 <= density <= 0.25) and (contrast >= 0.07)
+    conf = max(0.1, min(0.95, 0.5 * ((density-0.03) / 0.22) + 0.5 * ((contrast-0.07) / 0.23)))
+    conf = float(round(conf, 2))
 
-    # Determine message
-    if label != "ultrasound_side":
-        raise HTTPException(status_code=400, detail="Please upload a clear side-profile baby scan.")
-
-    # Return validation result
-    return {
-        "status": "ok",
-        "label": label,
-        "confidence": confidence,
-        "message": "Valid ultrasound side-profile image.",
-    }
+    if likely_ultrasound:
+        return {
+            "status": "ok",
+            "label": "ultrasound_side",
+            "confidence": conf,
+            "message": "Valid ultrasound side-profile image (heuristic)."
+        }
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload rejected. Please upload a clear grayscale ultrasound side profile (side view, not front/back)."
+        )
