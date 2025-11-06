@@ -7,13 +7,21 @@ from typing import Tuple
 
 app = FastAPI(title="Baby Predictor Validator")
 
-allowed_origins = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "http://localhost:3000").split(",")]
+# ✅ Explicit list of allowed origins (no trailing slashes)
+ALLOWED_ORIGINS = [
+    "https://mybabygenderpredictor.com",
+    "https://www.mybabygenderpredictor.com",
+    "https://mybabygenderpredictor-webapp.vercel.app",
+    "http://localhost:3000",  # for local testing
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=False,
-    allow_methods=["POST","GET","OPTIONS"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,  # ✅ required for strict cross-origin with POST
+    allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 @app.get("/health")
