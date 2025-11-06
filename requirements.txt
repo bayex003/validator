@@ -1,6 +1,6 @@
-fastapi
-uvicorn
-pillow
-numpy
-scipy
-python-multipart
+fastapi==0.110.0
+uvicorn[standard]==0.30.0
+pillow==10.3.0
+numpy==1.26.4
+scipy==1.13.1
+python-multipart==0.0.9
